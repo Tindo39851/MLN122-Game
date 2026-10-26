@@ -1,5 +1,6 @@
-import type { FormEvent } from "react";
-import { AlertCircle, ArrowRight, DoorOpen, Gamepad2, LockKeyhole, QrCode, Radio, ShieldCheck, UsersRound, Wrench } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { AlertCircle, ArrowRight, BookOpen, DoorOpen, Gamepad2, LockKeyhole, QrCode, Radio, ShieldCheck, UsersRound } from "lucide-react";
+import { RulesModal } from "../components/GameWidgets";
 import { Alerts } from "../components/ui";
 
 export function EntryView(props: {
@@ -8,7 +9,9 @@ export function EntryView(props: {
   onSubmit: (event: FormEvent) => void; onSoloPlay: () => void;
 }) {
   const { wantsAdmin, busy } = props;
+  const [showRules, setShowRules] = useState(false);
   return <section className="entry-layout">
+    {showRules && <RulesModal onClose={() => setShowRules(false)} />}
     <div className="intro-panel">
       <div className="eyebrow"><span className="eyebrow-line" /> PIXEL BOSS RUSH · 4 PHASE · 40 CÂU HỎI</div>
       <h1>Giải cứu<br /><em>xưởng máy.</em></h1>
@@ -20,18 +23,29 @@ export function EntryView(props: {
         <i />
         <div><strong>06</strong><span>ĐÒN HẠ 1 BOSS</span></div>
       </div>
-      <div className="blueprint-art" aria-hidden="true">
-        <div className="blueprint-grid" />
-        <div className="gear gear-large spin-slow"><Wrench size={44} /></div>
-        <div className="gear gear-small spin-reverse"><Wrench size={27} /></div>
-        <div className="blueprint-tag">PIXEL ARENA · WASD + SPACE</div>
-        <div className="blueprint-stamp">BOSS<br />RUSH</div>
-        <div className="blueprint-label label-one">GIÁ TRỊ<br />THẶNG DƯ</div>
-        <div className="blueprint-label label-two">TÍCH LŨY<br />TƯ BẢN</div>
+
+      {/* Tóm tắt Luật chơi Từ Thua Đến Thắng ngay trên màn hình chính */}
+      <div className="panel" style={{ padding: "12px 14px", marginTop: 14, fontSize: 13.5, lineHeight: 1.55 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <strong>📖 TÓM TẮT LUẬT CHƠI (TỪ THUA ĐẾN THẮNG)</strong>
+          <button type="button" className="button button-ghost" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setShowRules(true)}>
+            <BookOpen size={14} /> Xem chi tiết A–Z
+          </button>
+        </div>
+        <ul style={{ margin: 0, paddingLeft: 18 }}>
+          <li><b>Cách đánh Boss</b>: Di chuyển bằng <b>WASD / D-Pad</b> né đạn Boss → Chạm ô <b>[?]</b> (hoặc bấm <b>Space</b>) để mở câu hỏi (25s).</li>
+          <li><b>Hỗ trợ</b>: Đúng <b>3 câu liên tiếp (Combo x3)</b> bật <b>🛡️ Khiên đỡ 1 đạn</b> · Nhặt hộp <b>[+]</b> trên sân để <b>hồi +1 Tim ❤️</b>.</li>
+          <li><b>Khi nào THUA (Game Over)</b>: Mất sạch <b>5 Tim (0/5 ❤️)</b> HOẶC trả lời <b>sai 5/10 câu</b> trong 1 Phase (không còn đủ 6 câu đúng để hạ Boss 6 HP). Có thể chọn <b>Phục thù lại Phase đó</b>!</li>
+          <li><b>Khi nào THẮNG (Phá Đảo)</b>: Trả lời đúng <b>6/10 câu</b> mỗi Phase để mở cổng qua màn → Hạ gục đủ <b>4 Trùm Tư Bản</b> để chiến thắng!</li>
+        </ul>
       </div>
-      <div style={{ marginTop: 18 }}>
+
+      <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
         <button type="button" className="button button-primary" onClick={props.onSoloPlay}>
-          <Gamepad2 size={17} /> ⚔️ CHƠI NGAY (SOLO PIXEL WASD — KHÔNG CẦN MÃ PHÒNG)
+          <Gamepad2 size={17} /> ⚔️ CHƠI NGAY (SOLO PIXEL WASD)
+        </button>
+        <button type="button" className="button button-ghost" onClick={() => setShowRules(true)}>
+          <BookOpen size={17} /> 📖 HƯỚNG DẪN & LUẬT CHƠI CHI TIẾT
         </button>
       </div>
     </div>

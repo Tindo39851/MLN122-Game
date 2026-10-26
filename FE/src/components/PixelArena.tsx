@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Flame, Heart, RotateCcw, Shield, ShieldAlert, Skull, Sparkles, Swords, Trophy, X, Zap } from "lucide-react";
+import { BookOpen, Check, Flame, Heart, RotateCcw, Shield, ShieldAlert, Skull, Sparkles, Swords, Trophy, X, Zap } from "lucide-react";
 import { PHASES, SCORING, TOTAL_PHASES, type PhaseQuestion } from "../lib/phases";
 import { sfx, unlockAudio } from "../lib/sound";
-import { Confetti } from "./GameWidgets";
+import { Confetti, RulesModal } from "./GameWidgets";
 import { letter } from "./ui";
 
 interface Orb {
@@ -220,6 +220,7 @@ export function PixelArena({
   const [phaseCleared, setPhaseCleared] = useState(false);
   const [allCleared, setAllCleared] = useState(false);
   const [gameOverReason, setGameOverReason] = useState<"out_of_hearts" | "not_enough_questions" | null>(null);
+  const [showRules, setShowRules] = useState(false);
 
   // Số câu hỏi tối đa được phép sai trong 1 Phase (10 câu - 6 HP Boss = tối đa 4 câu sai; sai câu thứ 5 là thua)
   const maxAllowedWrong = currentPhase.questions.length - currentPhase.bossHp;
@@ -866,6 +867,7 @@ export function PixelArena({
   return (
     <div className="pixel-arena-wrap">
       {phaseCleared && <Confetti pieces={50} />}
+      {showRules && <RulesModal onClose={() => setShowRules(false)} />}
 
       {/* Thanh HUD Pixel trên cùng */}
       <div className="pixel-hud panel">
@@ -895,6 +897,9 @@ export function PixelArena({
         <div className="pixel-hud-right">
           <div><span>ĐIỂM</span><strong>{score}đ</strong></div>
           {streak >= 2 && <span className="streak-chip"><Flame size={12} /> x{streak}</span>}
+          <button type="button" className="button button-ghost" style={{ padding: "5px 9px", fontSize: 12 }} onClick={() => setShowRules(true)}>
+            <BookOpen size={14} /> Luật chơi
+          </button>
         </div>
       </div>
 
