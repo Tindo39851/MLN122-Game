@@ -276,6 +276,10 @@ export function PixelArena({
     }
     unlockAudio();
     sfx.select();
+    // Xóa đạn đang bay sát người & cấp khiên bảo vệ tạm thời khi vừa mở/đóng câu hỏi
+    stateRef.current.bullets = [];
+    stateRef.current.shotCooldown = 85;
+    stateRef.current.invuln = 160;
     setActiveQuestion(q);
     setQuestionOpenedAt(Date.now());
     setQuestionTimer(25);
@@ -449,7 +453,7 @@ export function PixelArena({
         color: "#e63946",
         life: 20,
       });
-      s.invuln = 45;
+      s.invuln = 180;
       spawnExplosion(s.px, s.py, "#e63946", 22);
       s.floats.push({
         x: s.px - 24,
@@ -459,6 +463,11 @@ export function PixelArena({
         life: 45,
       });
     }
+
+    // Dọn sạch đạn đang bay và cấp 3 giây bất tử sau khi trả lời xong để không bị đạn đánh úp
+    s.bullets = [];
+    s.shotCooldown = 90;
+    s.invuln = 180;
 
     // Kiểm tra điều kiện THUA CUỘC:
     // 1. Hết sạch 5 Tim (nextPlayerHp <= 0)
@@ -563,7 +572,7 @@ export function PixelArena({
     if (!ctx) return;
 
     let animId = 0;
-    const paused = !!activeQuestion || !!feedback || allCleared || !!gameOverReason;
+    const paused = !!activeQuestion || !!feedback || allCleared || !!gameOverReason || showRules;
 
     const tick = () => {
       const s = stateRef.current;
@@ -581,17 +590,17 @@ export function PixelArena({
           dx *= 0.7071;
           dy *= 0.7071;
         }
-        const speed = 3.2;
+        const speed = 3.35;
         s.px = Math.max(36, Math.min(W - 190, s.px + dx * speed));
         s.py = Math.max(46, Math.min(H - 42, s.py + dy * speed));
         if (s.invuln > 0) s.invuln--;
 
         // 2. Sinh Hộp Cứu Thương Công Đoàn [+] nếu người chơi mất máu do đạn
-        if (!s.portalOpen && playerHp < 5 && !s.medkit && s.frame % 420 === 0) {
+        if (!s.portalOpen && playerHp < 5 && !s.medkit && s.frame % 360 === 0) {
           s.medkit = {
             x: 110 + Math.random() * 210,
             y: 70 + Math.random() * (H - 140),
-            life: 380,
+            life: 420,
           };
         }
         if (s.medkit) {
@@ -609,18 +618,18 @@ export function PixelArena({
 
         // 3. Di chuyển Boss & bắn đạn (nếu Boss chưa bị hạ)
         if (!s.portalOpen) {
-          s.bossY += s.bossDir * (1.1 + phaseIdx * 0.35);
+          s.bossY += s.bossDir * (0.95 + phaseIdx * 0.25);
           if (s.bossY < 72) { s.bossY = 72; s.bossDir = 1; }
           if (s.bossY > H - 72) { s.bossY = H - 72; s.bossDir = -1; }
           if (s.bossFlash > 0) s.bossFlash--;
 
           s.shotCooldown--;
           if (s.shotCooldown <= 0) {
-            s.shotCooldown = Math.max(38, 78 - phaseIdx * 10);
+            s.shotCooldown = Math.max(58, 96 - phaseIdx * 10);
             const angle = Math.atan2(s.py - s.bossY, s.px - s.bossX);
-            const spread = phaseIdx >= 2 ? [-0.22, 0, 0.22] : [-0.12, 0.12];
+            const spread = phaseIdx >= 2 ? [-0.24, 0, 0.24] : [-0.14, 0.14];
             for (const offset of spread) {
-              const spd = 2.4 + phaseIdx * 0.35;
+              const spd = 1.65 + phaseIdx * 0.22;
               s.bullets.push({
                 x: s.bossX - 28,
                 y: s.bossY,
@@ -638,13 +647,13 @@ export function PixelArena({
           b.x += b.vx;
           b.y += b.vy;
           if (b.x < 10 || b.x > W - 10 || b.y < 10 || b.y > H - 10) return false;
-          if (s.invuln <= 0 && Math.hypot(b.x - s.px, b.y - s.py) < 18) {
-            s.invuln = 48;
+          if (s.invuln <= 0 && Math.hypot(b.x - s.px, b.y - s.py) < 17) {
+            s.invuln = 180; // 3 giây khiên bất tử sau khi trúng đạn hoặc vỡ khiên
             if (hasShield) {
               setHasShield(false);
               sfx.select();
-              spawnExplosion(s.px, s.py, "#52b788", 20);
-              s.floats.push({ x: s.px - 24, y: s.py - 22, text: "🛡️ KHIÊN ĐỠ ĐẠN!", color: "#52b788", life: 40 });
+              spawnExplosion(s.px, s.py, "#52b788", 24);
+              s.floats.push({ x: s.px - 28, y: s.py - 22, text: "🛡️ KHIÊN ĐỠ + 3s BẤT TỬ!", color: "#52b788", life: 50 });
               return false;
             }
             sfx.wrong();
@@ -760,14 +769,14 @@ export function PixelArena({
         ctx.fillText("CỔNG QUA PHASE", px, py - r - 8);
       }
 
-      // 9. Vẽ Nhân Vật Công Nhân & Khiên Công Đoàn
-      if (s.invuln % 4 < 2) {
-        const bobY = (s.keys.size > 0 || s.touchDir.x !== 0 || s.touchDir.y !== 0) ? Math.sin(s.frame * 0.35) * 2 : 0;
-        if (hasShield) {
-          ctx.strokeStyle = "#52b788";
-          ctx.lineWidth = 2;
-          ctx.strokeRect(s.px - 22, s.py + bobY - 22, 44, 44);
-        }
+      // 9. Vẽ Nhân Vật Công Nhân & Khiên Bảo Hộ
+      const bobY = (s.keys.size > 0 || s.touchDir.x !== 0 || s.touchDir.y !== 0) ? Math.sin(s.frame * 0.35) * 2 : 0;
+      if (hasShield || s.invuln > 0) {
+        ctx.strokeStyle = hasShield ? "#52b788" : "#f4d35e";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(s.px - 22, s.py + bobY - 22, 44, 44);
+      }
+      if (s.invuln % 4 < 3) {
         drawSprite(ctx, WORKER_SPRITE, s.px, s.py + bobY, 3);
         ctx.fillStyle = "#d8f06f";
         ctx.font = "bold 10px 'Be Vietnam Pro', sans-serif";
