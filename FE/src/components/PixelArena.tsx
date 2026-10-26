@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Flame, Heart, ShieldAlert, Sparkles, Swords, Trophy, X, Zap } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, Flame, Heart, RotateCcw, Shield, ShieldAlert, Skull, Sparkles, Swords, Trophy, X, Zap } from "lucide-react";
 import { PHASES, SCORING, TOTAL_PHASES, type PhaseQuestion } from "../lib/phases";
 import { sfx, unlockAudio } from "../lib/sound";
 import { Confetti } from "./GameWidgets";
@@ -10,6 +10,12 @@ interface Orb {
   x: number;
   y: number;
   bob: number;
+}
+
+interface Medkit {
+  x: number;
+  y: number;
+  life: number;
 }
 
 interface Bullet {
@@ -179,11 +185,24 @@ export function PixelArena({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [phaseIdx, setPhaseIdx] = useState(Math.max(0, Math.min(TOTAL_PHASES - 1, initialPhase - 1)));
+  const [shuffleSeed, setShuffleSeed] = useState(0);
   const currentPhase = PHASES[phaseIdx];
+
+  // Trộn ngẫu nhiên 10 câu hỏi của Phase hiện tại mỗi khi vào Phase hoặc Phục thù lại Phase
+  const phaseQuestions = useMemo(() => {
+    const copy = [...currentPhase.questions];
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+  }, [currentPhase.questions, shuffleSeed]);
 
   const [bossHp, setBossHp] = useState(currentPhase.bossHp);
   const [playerHp, setPlayerHp] = useState(5);
+  const [hasShield, setHasShield] = useState(false);
   const [score, setScore] = useState(initialScore);
+  const [phaseStartScore, setPhaseStartScore] = useState(initialScore);
   const [streak, setStreak] = useState(0);
   const [correctTotal, setCorrectTotal] = useState(0);
   const [askedIds, setAskedIds] = useState<string[]>([]);
@@ -193,12 +212,17 @@ export function PixelArena({
   const [questionTimer, setQuestionTimer] = useState(25);
   const [feedback, setFeedback] = useState<{
     correct: boolean;
+    timeout?: boolean;
     points: number;
     correctLabel: string;
     explanation: string;
   } | null>(null);
   const [phaseCleared, setPhaseCleared] = useState(false);
   const [allCleared, setAllCleared] = useState(false);
+  const [gameOverReason, setGameOverReason] = useState<"out_of_hearts" | "not_enough_questions" | null>(null);
+
+  // Số câu hỏi tối đa được phép sai trong 1 Phase (10 câu - 6 HP Boss = tối đa 4 câu sai; sai câu thứ 5 là thua)
+  const maxAllowedWrong = currentPhase.questions.length - currentPhase.bossHp;
 
   // Trạng thái vật lý trong Canvas (ref để vòng lặp 60fps không re-render React)
   const stateRef = useRef({
@@ -216,6 +240,7 @@ export function PixelArena({
     keys: new Set<string>(),
     touchDir: { x: 0, y: 0 },
     orbs: [] as Orb[],
+    medkit: null as Medkit | null,
     bullets: [] as Bullet[],
     particles: [] as Particle[],
     floats: [] as FloatText[],
@@ -234,39 +259,26 @@ export function PixelArena({
 
   useEffect(() => {
     spawnOrbs();
-  }, [phaseIdx, spawnOrbs]);
+  }, [phaseIdx, shuffleSeed, spawnOrbs]);
 
-  const pickNextQuestion = useCallback((): PhaseQuestion => {
-    const pool = currentPhase.questions;
-    const unasked = pool.filter((q) => !askedIds.includes(q.id));
-    if (unasked.length > 0) return unasked[0];
-    // Nếu đã hỏi hết 10 câu mà Boss vẫn còn máu, ưu tiên hỏi lại các câu đã trả lời sai để người chơi phục thù!
-    const retryPool = pool.filter((q) => wrongIds.includes(q.id));
-    if (retryPool.length > 0) return retryPool[Math.floor(Math.random() * retryPool.length)];
-    return pool[Math.floor(Math.random() * pool.length)];
-  }, [currentPhase.questions, askedIds, wrongIds]);
+  const pickNextQuestion = useCallback((): PhaseQuestion | null => {
+    const unasked = phaseQuestions.filter((q) => !askedIds.includes(q.id));
+    return unasked.length > 0 ? unasked[0] : null;
+  }, [phaseQuestions, askedIds]);
 
   const openQuestionModal = useCallback(() => {
-    if (activeQuestion || feedback || phaseCleared || allCleared) return;
+    if (activeQuestion || feedback || phaseCleared || allCleared || gameOverReason) return;
+    const q = pickNextQuestion();
+    if (!q) {
+      setGameOverReason("not_enough_questions");
+      return;
+    }
     unlockAudio();
     sfx.select();
-    const q = pickNextQuestion();
     setActiveQuestion(q);
     setQuestionOpenedAt(Date.now());
     setQuestionTimer(25);
-  }, [activeQuestion, feedback, phaseCleared, allCleared, pickNextQuestion]);
-
-  // Đồng hồ đếm ngược 25s khi mở câu hỏi
-  useEffect(() => {
-    if (!activeQuestion) return;
-    const timer = window.setInterval(() => {
-      const elapsed = Math.floor((Date.now() - questionOpenedAt) / 1000);
-      const left = Math.max(0, 25 - elapsed);
-      setQuestionTimer(left);
-      if (left <= 5 && left > 0) sfx.tick();
-    }, 250);
-    return () => window.clearInterval(timer);
-  }, [activeQuestion, questionOpenedAt]);
+  }, [activeQuestion, feedback, phaseCleared, allCleared, gameOverReason, pickNextQuestion]);
 
   const spawnExplosion = (x: number, y: number, color: string, count = 28) => {
     const s = stateRef.current;
@@ -285,23 +297,70 @@ export function PixelArena({
     }
   };
 
-  const goNextPhase = useCallback(() => {
-    unlockAudio();
-    sfx.start();
+  const resetArenaEntities = () => {
     const s = stateRef.current;
     s.bullets = [];
+    s.medkit = null;
     s.portalOpen = false;
     s.px = 110;
     s.py = H / 2;
+    s.invuln = 0;
+  };
+
+  const retryCurrentPhase = useCallback(() => {
+    unlockAudio();
+    sfx.start();
+    resetArenaEntities();
+    setBossHp(currentPhase.bossHp);
+    setPlayerHp(5);
+    setHasShield(false);
+    setStreak(0);
+    setScore(phaseStartScore);
+    setAskedIds([]);
+    setWrongIds([]);
+    setPhaseCleared(false);
+    setFeedback(null);
+    setGameOverReason(null);
+    setShuffleSeed((n) => n + 1);
+  }, [currentPhase.bossHp, phaseStartScore]);
+
+  const restartFromPhaseOne = useCallback(() => {
+    unlockAudio();
+    sfx.start();
+    resetArenaEntities();
+    setPhaseIdx(0);
+    setBossHp(PHASES[0].bossHp);
+    setPlayerHp(5);
+    setHasShield(false);
+    setStreak(0);
+    setScore(0);
+    setPhaseStartScore(0);
+    setCorrectTotal(0);
+    setAskedIds([]);
+    setWrongIds([]);
+    setPhaseCleared(false);
+    setAllCleared(false);
+    setFeedback(null);
+    setGameOverReason(null);
+    setShuffleSeed((n) => n + 1);
+  }, []);
+
+  const goNextPhase = useCallback(() => {
+    unlockAudio();
+    sfx.start();
+    resetArenaEntities();
     if (phaseIdx + 1 < TOTAL_PHASES) {
       const next = phaseIdx + 1;
       setPhaseIdx(next);
       setBossHp(PHASES[next].bossHp);
       setPlayerHp(5);
+      setPhaseStartScore(score);
       setAskedIds([]);
       setWrongIds([]);
       setPhaseCleared(false);
       setFeedback(null);
+      setGameOverReason(null);
+      setShuffleSeed((n) => n + 1);
     } else {
       setAllCleared(true);
       sfx.fanfare();
@@ -313,15 +372,19 @@ export function PixelArena({
     if (!activeQuestion) return;
     unlockAudio();
     const q = activeQuestion;
-    const elapsedMs = Math.max(200, Date.now() - questionOpenedAt);
-    const correct = optionId === q.correct;
+    const isTimeout = optionId === "__TIMEOUT__";
+    const elapsedMs = isTimeout ? 25_000 : Math.max(200, Date.now() - questionOpenedAt);
+    const correct = !isTimeout && optionId === q.correct;
     const s = stateRef.current;
 
-    setAskedIds((prev) => (prev.includes(q.id) ? prev : [...prev, q.id]));
+    const nextAskedIds = askedIds.includes(q.id) ? askedIds : [...askedIds, q.id];
+    setAskedIds(nextAskedIds);
     setActiveQuestion(null);
 
     let gained = 0;
     let nextHp = bossHp;
+    let nextPlayerHp = playerHp;
+    let nextWrongIds = wrongIds;
     let defeatedCount = phaseIdx;
 
     if (correct) {
@@ -331,6 +394,12 @@ export function PixelArena({
       const streakBonus = Math.min((nextStreak - 1) * SCORING.streakBonus, SCORING.maxStreakBonus);
       gained = SCORING.base + speedBonus + streakBonus;
       nextHp = Math.max(0, bossHp - 1);
+
+      // Đạt chuỗi 3 câu đúng liên tiếp -> Kích hoạt Khiên Công Đoàn đỡ 1 đạn Boss
+      if (nextStreak >= 3 && !hasShield) {
+        setHasShield(true);
+        s.floats.push({ x: s.px - 24, y: s.py - 36, text: "🛡️ KHIÊN COMBO x3!", color: "#52b788", life: 55 });
+      }
 
       // Hiệu ứng tia chưởng từ Công Nhân sang Boss
       s.beams.push({
@@ -351,6 +420,7 @@ export function PixelArena({
         s.floats.push({ x: s.bossX - 40, y: s.bossY - 30, text: `HẠ BOSS! +${SCORING.bossKillBonus}đ`, color: "#ffd166", life: 65 });
         s.portalOpen = true;
         s.bullets = [];
+        s.medkit = null;
         setPhaseCleared(true);
         sfx.fanfare();
       } else {
@@ -361,11 +431,14 @@ export function PixelArena({
       setStreak(nextStreak);
       setCorrectTotal((c) => c + 1);
       setScore((prev) => prev + gained);
-      setWrongIds((prev) => prev.filter((id) => id !== q.id));
     } else {
       sfx.wrong();
       setStreak(0);
-      setWrongIds((prev) => (prev.includes(q.id) ? prev : [...prev, q.id]));
+      nextWrongIds = wrongIds.includes(q.id) ? wrongIds : [...wrongIds, q.id];
+      setWrongIds(nextWrongIds);
+      nextPlayerHp = Math.max(0, playerHp - 1);
+      setPlayerHp(nextPlayerHp);
+
       // Boss phản đòn
       s.beams.push({
         fromX: s.bossX - 24,
@@ -376,21 +449,42 @@ export function PixelArena({
         life: 20,
       });
       s.invuln = 45;
-      spawnExplosion(s.px, s.py, "#e63946", 20);
-      s.floats.push({ x: s.px - 20, y: s.py - 24, text: "TRƯỢT ĐÒN!", color: "#ff6b6b", life: 45 });
-      setPlayerHp((hp) => (hp <= 1 ? 5 : hp - 1));
+      spawnExplosion(s.px, s.py, "#e63946", 22);
+      s.floats.push({
+        x: s.px - 24,
+        y: s.py - 24,
+        text: isTimeout ? "HẾT GIỜ! -1 TIM" : "SAI! -1 TIM",
+        color: "#ff6b6b",
+        life: 45,
+      });
     }
+
+    // Kiểm tra điều kiện THUA CUỘC:
+    // 1. Hết sạch 5 Tim (nextPlayerHp <= 0)
+    // 2. Số câu hỏi còn lại trong Phase (10 - đã hỏi) < số HP còn lại của Boss (tức đã sai >= 5 câu)
+    const remainingQuestions = currentPhase.questions.length - nextAskedIds.length;
+    const willGameOver =
+      nextPlayerHp <= 0
+        ? "out_of_hearts"
+        : nextHp > remainingQuestions
+          ? "not_enough_questions"
+          : null;
 
     const correctOpt = q.options.find((o) => o.id === q.correct)?.label ?? "";
     setFeedback({
       correct,
+      timeout: isTimeout,
       points: gained,
       correctLabel: correctOpt,
       explanation: q.explanation,
     });
 
-    // Bổ sung lại trạm năng lượng mới nếu trên sân còn ít
-    if (s.orbs.length < 2 && nextHp > 0) spawnOrbs();
+    if (willGameOver) {
+      s.bullets = [];
+      setGameOverReason(willGameOver);
+    } else if (s.orbs.length < 2 && nextHp > 0) {
+      spawnOrbs();
+    }
 
     onBossHit?.({
       phase: currentPhase.phase,
@@ -402,7 +496,23 @@ export function PixelArena({
       bossHpLeft: nextHp,
       bossesDefeated: defeatedCount,
     });
-  }, [activeQuestion, questionOpenedAt, bossHp, phaseIdx, streak, currentPhase, spawnOrbs, onBossHit]);
+  }, [activeQuestion, questionOpenedAt, askedIds, bossHp, playerHp, wrongIds, phaseIdx, streak, hasShield, currentPhase, spawnOrbs, onBossHit]);
+
+  // Đồng hồ đếm ngược 25s khi mở câu hỏi (về 0s tự động xử thua câu đó)
+  useEffect(() => {
+    if (!activeQuestion) return;
+    const timer = window.setInterval(() => {
+      const elapsed = Math.floor((Date.now() - questionOpenedAt) / 1000);
+      const left = Math.max(0, 25 - elapsed);
+      setQuestionTimer(left);
+      if (left <= 5 && left > 0) sfx.tick();
+      if (left === 0) {
+        window.clearInterval(timer);
+        handleAnswer("__TIMEOUT__");
+      }
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [activeQuestion, questionOpenedAt, handleAnswer]);
 
   // Lắng nghe phím WASD / Mũi tên / Space / Phím tắt 1-4 khi mở câu hỏi
   useEffect(() => {
@@ -423,6 +533,7 @@ export function PixelArena({
         }
         return;
       }
+      if (gameOverReason) return;
       if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) {
         e.preventDefault();
         stateRef.current.keys.add(k);
@@ -441,7 +552,7 @@ export function PixelArena({
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [activeQuestion, feedback, phaseCleared, handleAnswer, openQuestionModal, goNextPhase]);
+  }, [activeQuestion, feedback, gameOverReason, phaseCleared, handleAnswer, openQuestionModal, goNextPhase]);
 
   // Vòng lặp game 60 FPS trên Canvas
   useEffect(() => {
@@ -451,7 +562,7 @@ export function PixelArena({
     if (!ctx) return;
 
     let animId = 0;
-    const paused = !!activeQuestion || !!feedback || allCleared;
+    const paused = !!activeQuestion || !!feedback || allCleared || !!gameOverReason;
 
     const tick = () => {
       const s = stateRef.current;
@@ -474,7 +585,28 @@ export function PixelArena({
         s.py = Math.max(46, Math.min(H - 42, s.py + dy * speed));
         if (s.invuln > 0) s.invuln--;
 
-        // 2. Di chuyển Boss & bắn đạn (nếu Boss chưa bị hạ)
+        // 2. Sinh Hộp Cứu Thương Công Đoàn [+] nếu người chơi mất máu do đạn
+        if (!s.portalOpen && playerHp < 5 && !s.medkit && s.frame % 420 === 0) {
+          s.medkit = {
+            x: 110 + Math.random() * 210,
+            y: 70 + Math.random() * (H - 140),
+            life: 380,
+          };
+        }
+        if (s.medkit) {
+          s.medkit.life--;
+          if (Math.hypot(s.px - s.medkit.x, s.py - s.medkit.y) < 24) {
+            s.medkit = null;
+            sfx.correct();
+            spawnExplosion(s.px, s.py, "#52b788", 16);
+            s.floats.push({ x: s.px - 22, y: s.py - 24, text: "+1 TIM CỨU THƯƠNG!", color: "#52b788", life: 45 });
+            setPlayerHp((hp) => Math.min(5, hp + 1));
+          } else if (s.medkit.life <= 0) {
+            s.medkit = null;
+          }
+        }
+
+        // 3. Di chuyển Boss & bắn đạn (nếu Boss chưa bị hạ)
         if (!s.portalOpen) {
           s.bossY += s.bossDir * (1.1 + phaseIdx * 0.35);
           if (s.bossY < 72) { s.bossY = 72; s.bossDir = 1; }
@@ -500,23 +632,38 @@ export function PixelArena({
           }
         }
 
-        // 3. Cập nhật đạn Boss & va chạm với Công Nhân
+        // 4. Cập nhật đạn Boss & va chạm với Công Nhân
         s.bullets = s.bullets.filter((b) => {
           b.x += b.vx;
           b.y += b.vy;
           if (b.x < 10 || b.x > W - 10 || b.y < 10 || b.y > H - 10) return false;
           if (s.invuln <= 0 && Math.hypot(b.x - s.px, b.y - s.py) < 18) {
-            s.invuln = 45;
+            s.invuln = 48;
+            if (hasShield) {
+              setHasShield(false);
+              sfx.select();
+              spawnExplosion(s.px, s.py, "#52b788", 20);
+              s.floats.push({ x: s.px - 24, y: s.py - 22, text: "🛡️ KHIÊN ĐỠ ĐẠN!", color: "#52b788", life: 40 });
+              return false;
+            }
             sfx.wrong();
-            spawnExplosion(s.px, s.py, "#e63946", 14);
+            spawnExplosion(s.px, s.py, "#e63946", 16);
             s.floats.push({ x: s.px - 18, y: s.py - 20, text: "-1 TIM!", color: "#ff6b6b", life: 35 });
-            setPlayerHp((hp) => (hp <= 1 ? 5 : hp - 1));
+            setPlayerHp((hp) => {
+              const next = hp - 1;
+              if (next <= 0) {
+                s.bullets = [];
+                setGameOverReason("out_of_hearts");
+                return 0;
+              }
+              return next;
+            });
             return false;
           }
           return true;
         });
 
-        // 4. Chạm Trạm Năng Lượng (?) -> mở câu hỏi đánh Boss
+        // 5. Chạm Trạm Năng Lượng (?) -> mở câu hỏi đánh Boss
         if (!s.portalOpen) {
           for (let i = 0; i < s.orbs.length; i++) {
             const o = s.orbs[i];
@@ -536,7 +683,7 @@ export function PixelArena({
         }
       }
 
-      // 5. Vẽ nền xưởng máy Pixel
+      // 6. Vẽ nền xưởng máy Pixel
       ctx.imageSmoothingEnabled = false;
       ctx.fillStyle = "#12231d";
       ctx.fillRect(0, 0, W, H);
@@ -570,7 +717,7 @@ export function PixelArena({
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // 6. Vẽ Trạm Năng Lượng Câu Hỏi (?)
+      // 7. Vẽ Trạm Năng Lượng Câu Hỏi (?)
       for (const o of s.orbs) {
         const by = o.y + Math.sin(s.frame * 0.08 + o.bob) * 4;
         ctx.fillStyle = "rgba(216, 240, 111, 0.22)";
@@ -583,7 +730,20 @@ export function PixelArena({
         ctx.fillText("?", o.x, by + 5);
       }
 
-      // 7. Vẽ Cổng Dịch Chuyển nếu đã hạ Boss
+      // 7b. Vẽ Hộp Cứu Thương Công Đoàn [+]
+      if (s.medkit) {
+        const my = s.medkit.y + Math.sin(s.frame * 0.12) * 3;
+        ctx.fillStyle = "rgba(82, 183, 136, 0.28)";
+        ctx.fillRect(s.medkit.x - 14, my - 14, 28, 28);
+        ctx.fillStyle = "#52b788";
+        ctx.fillRect(s.medkit.x - 10, my - 10, 20, 20);
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 14px 'DM Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("+", s.medkit.x, my + 5);
+      }
+
+      // 8. Vẽ Cổng Dịch Chuyển nếu đã hạ Boss
       if (s.portalOpen) {
         const px = W / 2;
         const py = H / 2;
@@ -599,9 +759,14 @@ export function PixelArena({
         ctx.fillText("CỔNG QUA PHASE", px, py - r - 8);
       }
 
-      // 8. Vẽ Nhân Vật Công Nhân
+      // 9. Vẽ Nhân Vật Công Nhân & Khiên Công Đoàn
       if (s.invuln % 4 < 2) {
         const bobY = (s.keys.size > 0 || s.touchDir.x !== 0 || s.touchDir.y !== 0) ? Math.sin(s.frame * 0.35) * 2 : 0;
+        if (hasShield) {
+          ctx.strokeStyle = "#52b788";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(s.px - 22, s.py + bobY - 22, 44, 44);
+        }
         drawSprite(ctx, WORKER_SPRITE, s.px, s.py + bobY, 3);
         ctx.fillStyle = "#d8f06f";
         ctx.font = "bold 10px 'Be Vietnam Pro', sans-serif";
@@ -609,7 +774,7 @@ export function PixelArena({
         ctx.fillText(playerName.slice(0, 12), s.px, s.py - 24);
       }
 
-      // 9. Vẽ Boss (nếu chưa nổ tung)
+      // 10. Vẽ Boss (nếu chưa nổ tung)
       if (!s.portalOpen) {
         const bossSprite = BOSS_SPRITES[phaseIdx] ?? BOSS_SPRITES[0];
         drawSprite(ctx, bossSprite, s.bossX, s.bossY, 5, s.bossFlash > 0);
@@ -622,7 +787,7 @@ export function PixelArena({
         ctx.fillRect(s.bossX - barW / 2, s.bossY - 44, Math.round(barW * hpRatio), 6);
       }
 
-      // 10. Vẽ Đạn Boss
+      // 11. Vẽ Đạn Boss
       for (const b of s.bullets) {
         ctx.fillStyle = "#111618";
         ctx.fillRect(b.x - b.r - 1, b.y - b.r - 1, (b.r + 1) * 2, (b.r + 1) * 2);
@@ -630,7 +795,7 @@ export function PixelArena({
         ctx.fillRect(b.x - b.r + 1, b.y - b.r + 1, (b.r - 1) * 2, (b.r - 1) * 2);
       }
 
-      // 11. Vẽ Tia Chưởng Năng Lượng
+      // 12. Vẽ Tia Chưởng Năng Lượng
       s.beams = s.beams.filter((bm) => {
         bm.life--;
         ctx.strokeStyle = bm.color;
@@ -642,7 +807,7 @@ export function PixelArena({
         return bm.life > 0;
       });
 
-      // 12. Vẽ Hạt Nổ Pixel
+      // 13. Vẽ Hạt Nổ Pixel
       s.particles = s.particles.filter((pt) => {
         pt.x += pt.vx;
         pt.y += pt.vy;
@@ -652,7 +817,7 @@ export function PixelArena({
         return pt.life > 0;
       });
 
-      // 13. Vẽ Chữ Nổi (-1 HP, +Điểm)
+      // 14. Vẽ Chữ Nổi (-1 HP, +Điểm)
       s.floats = s.floats.filter((fl) => {
         fl.y -= 0.7;
         fl.life--;
@@ -668,7 +833,7 @@ export function PixelArena({
 
     animId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animId);
-  }, [activeQuestion, feedback, allCleared, phaseIdx, bossHp, currentPhase, playerName, openQuestionModal, goNextPhase]);
+  }, [activeQuestion, feedback, allCleared, gameOverReason, phaseIdx, bossHp, playerHp, hasShield, currentPhase, playerName, openQuestionModal, goNextPhase]);
 
   const setTouch = (x: number, y: number) => {
     stateRef.current.touchDir = { x, y };
@@ -690,15 +855,7 @@ export function PixelArena({
         <button
           type="button"
           className="button button-primary"
-          onClick={() => {
-            setPhaseIdx(0);
-            setBossHp(PHASES[0].bossHp);
-            setPlayerHp(5);
-            setAskedIds([]);
-            setWrongIds([]);
-            setPhaseCleared(false);
-            setAllCleared(false);
-          }}
+          onClick={restartFromPhaseOne}
         >
           <Swords size={16} /> ĐÁNH LẠI TỪ PHASE 1
         </button>
@@ -720,12 +877,15 @@ export function PixelArena({
               <Heart key={i} size={15} className={i < playerHp ? "heart-full" : "heart-empty"} fill={i < playerHp ? "#e63946" : "none"} />
             ))}
           </div>
+          {hasShield && <span className="streak-chip"><Shield size={12} /> KHIÊN ĐỠ ĐẠN</span>}
         </div>
 
         <div className="pixel-boss-bar-wrap">
           <div className="pixel-boss-meta">
             <span><ShieldAlert size={14} /> BOSS: <b>{currentPhase.bossName}</b></span>
-            <span>HP: <b>{bossHp}/{currentPhase.bossHp}</b> (Cần {bossHp} câu đúng)</span>
+            <span>
+              HP: <b>{bossHp}/{currentPhase.bossHp}</b> · Câu còn: <b>{currentPhase.questions.length - askedIds.length}</b> (Sai: {wrongIds.length}/{maxAllowedWrong + 1})
+            </span>
           </div>
           <div className="pixel-boss-track">
             <div className="pixel-boss-fill" style={{ width: `${(bossHp / currentPhase.bossHp) * 100}%` }} />
@@ -782,7 +942,9 @@ export function PixelArena({
                       ? bossHp === 0
                         ? `💥 KẾT LIỄU ${currentPhase.bossName}! (+${feedback.points}đ)`
                         : `⚡ TRÚNG ĐÍCH! BOSS -1 HP (+${feedback.points}đ)`
-                      : "🛡️ ĐÒN ĐÁNH BỊ CHẶN! BOSS PHẢN CÔNG"}
+                      : feedback.timeout
+                        ? "⏱ HẾT GIỜ! BOSS PHẢN CÔNG (-1 TIM)"
+                        : "🛡️ ĐÒN ĐÁNH BỊ CHẶN! BOSS PHẢN CÔNG (-1 TIM)"}
                   </strong>
                   {!feedback.correct && <small>Đáp án đúng: <b>{feedback.correctLabel}</b></small>}
                 </div>
@@ -793,11 +955,51 @@ export function PixelArena({
                   <button type="button" className="button button-primary" onClick={goNextPhase}>
                     <Sparkles size={16} /> {phaseIdx + 1 < TOTAL_PHASES ? `VÀO PHASE ${phaseIdx + 2}` : "NHẬN CÚP CHIẾN THẮNG"}
                   </button>
+                ) : gameOverReason ? (
+                  <button type="button" className="button button-danger" onClick={() => setFeedback(null)}>
+                    <Skull size={16} /> XEM KẾT QUẢ CA ĐẤU
+                  </button>
                 ) : (
                   <button type="button" className="button button-primary" onClick={() => setFeedback(null)}>
                     <Swords size={16} /> TIẾP TỤC CHIẾN ĐẤU (SPACE)
                   </button>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Màn hình GAME OVER khi hết sạch 5 Tim hoặc sai quá 4 câu trong 1 Phase */}
+        {!feedback && gameOverReason && (
+          <div className="pixel-modal-backdrop" role="dialog" aria-modal="true">
+            <div className="pixel-modal pixel-feedback is-miss">
+              <div className="pixel-feedback-head">
+                <span className="result-icon"><Skull size={22} /></span>
+                <div>
+                  <strong>
+                    {gameOverReason === "out_of_hearts"
+                      ? `💔 CA KÍP GỤC NGÃ — HẾT SẠCH 5 TIM TẠI PHASE ${currentPhase.phase}!`
+                      : `🚨 KHÔNG ĐỦ ĐÒN HẠ BOSS — ĐÃ SAI ${wrongIds.length}/10 CÂU!`}
+                  </strong>
+                  <small>
+                    {gameOverReason === "out_of_hearts"
+                      ? `Bạn đã cạn kiệt cả 5 Tim trước ${currentPhase.bossName}.`
+                      : `Boss còn ${bossHp} HP nhưng trong Phase ${currentPhase.phase} chỉ còn ${currentPhase.questions.length - askedIds.length} câu hỏi (cần đúng ít nhất 6/10 câu để qua Phase).`}
+                  </small>
+                </div>
+              </div>
+              <div className="pixel-victory-stats" style={{ margin: "12px 0" }}>
+                <div><span>DỪNG TẠI</span><strong>Phase {currentPhase.phase}/{TOTAL_PHASES}</strong></div>
+                <div><span>ĐIỂM HIỆN TẠI</span><strong>{score}đ</strong></div>
+                <div><span>BOSS ĐÃ HẠ</span><strong>{phaseIdx} / 4</strong></div>
+              </div>
+              <div className="pixel-feedback-actions" style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button type="button" className="button button-primary" onClick={retryCurrentPhase}>
+                  <RotateCcw size={16} /> PHỤC THÙ LẠI PHASE {currentPhase.phase} (HỒI 5 TIM)
+                </button>
+                <button type="button" className="button button-ghost" onClick={restartFromPhaseOne}>
+                  <Swords size={16} /> CHƠI MỚI TỪ PHASE 1
+                </button>
               </div>
             </div>
           </div>
@@ -842,7 +1044,9 @@ export function PixelArena({
         <div className="pixel-guide">
           <strong>{currentPhase.bossTitle}</strong>
           <p>{currentPhase.intro}</p>
-          <small>Di chuyển bằng <b>WASD / Mũi tên</b> chạm vào ô <b>[?]</b> để mở câu hỏi hoặc bấm nút bên cạnh.</small>
+          <small>
+            Luật: Đúng <b>6/10 câu</b> để hạ Boss · Sai <b>5 câu</b> hoặc mất hết <b>5 Tim ❤️</b> sẽ Thất bại! Chuỗi <b>Combo x3</b> bật Khiên đỡ đạn, nhặt <b>[+]</b> hồi Tim.
+          </small>
         </div>
 
         <div className="pixel-action-btns">
